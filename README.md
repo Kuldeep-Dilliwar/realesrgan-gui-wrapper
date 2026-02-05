@@ -1,4 +1,4 @@
-# RealESRGAN Strict GUI
+# RealESRGAN GUI Wrapper
 
 A dedicated Python GUI for [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) designed specifically for video upscaling stability. 
 
@@ -18,13 +18,14 @@ This application is a GUI wrapper. For it to work, you must have the following i
 
 1. **FFmpeg**: Must be installed and added to your system PATH.
    - To test, open a terminal and type: `ffmpeg -version`
-2. **RealESRGAN Executable**: You need the command-line binary (e.g., `realesrgan-ncnn-vulkan.exe`).
-   - [Download it here](https://github.com/xinntao/Real-ESRGAN/releases)
+2. **RealESRGAN Executable**: You need the command-line binary.
+   - **Tested Version:** `realesrgan-ncnn-vulkan-20220424-windows` (v0.2.0.0).
+   - [Download it here](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.0.0)
 
 ## Installation
 
 ### Option A: Download Binary (Windows)
-1. Go to the [Releases](https://github.com/YOUR_USERNAME/YOUR_REPO/releases) page.
+1. Go to the [Releases](https://github.com/Kuldeep-Dilliwar/realesrgan-gui-wrapper/releases) page.
 2. Download `RealESRGAN-Strict-GUI-Windows.zip`.
 3. Extract and run the `.exe`.
 
