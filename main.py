@@ -1,232 +1,353 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, scrolledtext
 import subprocess
 import os
 import threading
+import shutil
+import json
+import tempfile
+import time
 
-class RealESRGANGUI:
+
+class ScrollableFrame(ttk.Frame):
+    def __init__(self, container, *args, **kwargs):
+        super().__init__(container, *args, **kwargs)
+        self.canvas = tk.Canvas(self)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.scrollable_window = ttk.Frame(self.canvas)
+        self.scrollable_window.bind("<Configure>",
+                                    lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.create_window((0, 0), window=self.scrollable_window, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+
+class RealESRGAN_Strict_GUI:
     def __init__(self, master):
         self.master = master
-        master.title("RealESRGAN GUI - Mommy's Helper")
+        master.title("RealESRGAN Pro - STRICT SYNC MODE")
+        master.geometry("750x850")
 
-        # Mode selection: Image or Video
         self.mode = tk.StringVar(value="Image")
-        mode_frame = tk.Frame(master)
-        mode_frame.pack(pady=10)
-        tk.Label(mode_frame, text="Select Mode:").pack(side=tk.LEFT)
-        tk.Radiobutton(mode_frame, text="Image", variable=self.mode, value="Image", command=self.update_mode).pack(side=tk.LEFT, padx=5)
-        tk.Radiobutton(mode_frame, text="Video", variable=self.mode, value="Video", command=self.update_mode).pack(side=tk.LEFT, padx=5)
+        self.realesrgan_path = tk.StringVar()
+        self.model_var = tk.StringVar(value="realesr-animevideov3")
+        self.match_source_fps = tk.BooleanVar(value=True)
+        self.is_running = False
+        self.stop_requested = False
+        self.current_subprocess = None
 
-        self.content_frame = tk.Frame(master)
-        self.content_frame.pack(pady=10)
+        main_wrapper = ScrollableFrame(master)
+        main_wrapper.pack(fill="both", expand=True)
+        self.body = main_wrapper.scrollable_window
 
-        self.create_image_widgets()
-        self.create_video_widgets()
+        # 1. Config
+        config_frame = ttk.LabelFrame(self.body, text="Configuration", padding=10)
+        config_frame.pack(fill="x", padx=10, pady=5)
+        tk.Label(config_frame, text="RealESRGAN Exe:").grid(row=0, column=0, sticky="e")
+        tk.Entry(config_frame, textvariable=self.realesrgan_path, width=50).grid(row=0, column=1, padx=5)
+        tk.Button(config_frame, text="Browse Exe", command=self.browse_exe).grid(row=0, column=2)
+
+        # 2. Mode
+        mode_frame = tk.Frame(self.body)
+        mode_frame.pack(pady=5)
+        tk.Label(mode_frame, text="Mode:").pack(side=tk.LEFT)
+        tk.Radiobutton(mode_frame, text="Image", variable=self.mode, value="Image", command=self.update_mode).pack(
+            side=tk.LEFT, padx=10)
+        tk.Radiobutton(mode_frame, text="Video", variable=self.mode, value="Video", command=self.update_mode).pack(
+            side=tk.LEFT, padx=10)
+
+        # 3. Settings
+        self.content_frame = ttk.LabelFrame(self.body, text="Job Settings", padding=10)
+        self.content_frame.pack(fill="x", padx=10, pady=5)
+        self.create_widgets()
         self.update_mode()
 
-    def create_image_widgets(self):
-        self.image_frame = tk.Frame(self.content_frame)
-        # Input image selection
-        tk.Label(self.image_frame, text="Input Image:").grid(row=0, column=0, sticky="e")
-        self.input_image_entry = tk.Entry(self.image_frame, width=50)
-        self.input_image_entry.grid(row=0, column=1, padx=5)
-        tk.Button(self.image_frame, text="Browse", command=self.browse_image).grid(row=0, column=2, padx=5)
+        # 4. Logs
+        log_frame = ttk.LabelFrame(self.body, text="Progress & Logs", padding=10)
+        log_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.progress_label = tk.Label(log_frame, text="Ready")
+        self.progress_label.pack(anchor="w")
+        self.progress_bar = ttk.Progressbar(log_frame, orient="horizontal", length=100, mode="determinate")
+        self.progress_bar.pack(fill="x", pady=5)
+        self.log_text = scrolledtext.ScrolledText(log_frame, height=15, state="disabled", font=("Consolas", 9))
+        self.log_text.pack(fill="both", expand=True)
 
-        # Output image selection
-        tk.Label(self.image_frame, text="Output Image:").grid(row=1, column=0, sticky="e")
-        self.output_image_entry = tk.Entry(self.image_frame, width=50)
-        self.output_image_entry.grid(row=1, column=1, padx=5)
-        tk.Button(self.image_frame, text="Browse", command=self.save_image).grid(row=1, column=2, padx=5)
+        self.run_btn = tk.Button(self.body, text="START PROCESS", command=self.toggle_process, bg="#dddddd", height=2,
+                                 font=("Arial", 10, "bold"))
+        self.run_btn.pack(fill="x", padx=10, pady=20)
 
-        # Model selection
-        tk.Label(self.image_frame, text="Model:").grid(row=2, column=0, sticky="e")
-        self.model_var = tk.StringVar(value="realesr-animevideov3")
-        self.model_menu = ttk.Combobox(self.image_frame, textvariable=self.model_var, state="readonly",
-                                       values=["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"])
-        self.model_menu.grid(row=2, column=1, sticky="w", padx=5)
-
-        # Scale factor
-        tk.Label(self.image_frame, text="Scale Factor (-s):").grid(row=3, column=0, sticky="e")
-        self.scale_entry = tk.Entry(self.image_frame, width=10)
-        self.scale_entry.insert(0, "2")
-        self.scale_entry.grid(row=3, column=1, sticky="w", padx=5)
-
-        # Output format
-        tk.Label(self.image_frame, text="Output Format (-f):").grid(row=4, column=0, sticky="e")
-        self.format_entry = tk.Entry(self.image_frame, width=10)
-        self.format_entry.insert(0, "png")
-        self.format_entry.grid(row=4, column=1, sticky="w", padx=5)
-
-        # Run button for image enhancement
-        self.run_image_btn = tk.Button(self.image_frame, text="Enhance Image", command=self.run_image_enhancement)
-        self.run_image_btn.grid(row=5, column=0, columnspan=3, pady=10)
-
-    def create_video_widgets(self):
-        self.video_frame = tk.Frame(self.content_frame)
-        # Input video file
-        tk.Label(self.video_frame, text="Input Video:").grid(row=0, column=0, sticky="e")
-        self.input_video_entry = tk.Entry(self.video_frame, width=50)
-        self.input_video_entry.grid(row=0, column=1, padx=5)
-        tk.Button(self.video_frame, text="Browse", command=self.browse_video).grid(row=0, column=2, padx=5)
-
-        # Output video file
-        tk.Label(self.video_frame, text="Output Video:").grid(row=1, column=0, sticky="e")
-        self.output_video_entry = tk.Entry(self.video_frame, width=50)
-        self.output_video_entry.grid(row=1, column=1, padx=5)
-        tk.Button(self.video_frame, text="Browse", command=self.save_video).grid(row=1, column=2, padx=5)
-
-        # Model selection
-        tk.Label(self.video_frame, text="Model:").grid(row=2, column=0, sticky="e")
-        self.video_model_var = tk.StringVar(value="realesr-animevideov3")
-        self.video_model_menu = ttk.Combobox(self.video_frame, textvariable=self.video_model_var, state="readonly",
-                                             values=["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"])
-        self.video_model_menu.grid(row=2, column=1, sticky="w", padx=5)
-
-        # Scale factor for video frames
-        tk.Label(self.video_frame, text="Scale Factor (-s):").grid(row=3, column=0, sticky="e")
-        self.video_scale_entry = tk.Entry(self.video_frame, width=10)
-        self.video_scale_entry.insert(0, "2")
-        self.video_scale_entry.grid(row=3, column=1, sticky="w", padx=5)
-
-        # Frame format
-        tk.Label(self.video_frame, text="Frame Format (-f):").grid(row=4, column=0, sticky="e")
-        self.video_format_entry = tk.Entry(self.video_frame, width=10)
-        self.video_format_entry.insert(0, "jpg")
-        self.video_format_entry.grid(row=4, column=1, sticky="w", padx=5)
-
-        # Run button for video enhancement
-        self.run_video_btn = tk.Button(self.video_frame, text="Enhance Video", command=self.run_video_enhancement)
-        self.run_video_btn.grid(row=5, column=0, columnspan=3, pady=10)
+    def create_widgets(self):
+        self.lbl_input = tk.Label(self.content_frame, text="Input File:")
+        self.entry_input = tk.Entry(self.content_frame, width=50)
+        self.btn_browse_input = tk.Button(self.content_frame, text="Browse", command=self.browse_input)
+        self.lbl_model = tk.Label(self.content_frame, text="Model:")
+        self.combo_model = ttk.Combobox(self.content_frame, textvariable=self.model_var, state="readonly",
+                                        values=["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"])
+        self.lbl_scale = tk.Label(self.content_frame, text="Scale (-s):")
+        self.entry_scale = tk.Entry(self.content_frame, width=10)
+        self.entry_scale.insert(0, "4")
+        self.lbl_format = tk.Label(self.content_frame, text="Format (-f):")
+        self.entry_format = tk.Entry(self.content_frame, width=10)
+        self.entry_format.insert(0, "jpg")
+        self.chk_fps = tk.Checkbutton(self.content_frame, text="Match Source FPS", variable=self.match_source_fps,
+                                      command=self.toggle_fps)
+        self.lbl_fps_manual = tk.Label(self.content_frame, text="Manual FPS:")
+        self.entry_fps = tk.Entry(self.content_frame, width=10)
+        self.entry_fps.insert(0, "30")
 
     def update_mode(self):
-        # Show or hide widgets based on selected mode
-        if self.mode.get() == "Image":
-            self.video_frame.pack_forget()
-            self.image_frame.pack()
+        for widget in self.content_frame.winfo_children(): widget.grid_forget()
+        self.lbl_input.grid(row=0, column=0, sticky="e", pady=5)
+        self.entry_input.grid(row=0, column=1, padx=5, pady=5)
+        self.btn_browse_input.grid(row=0, column=2, pady=5)
+        self.lbl_model.grid(row=1, column=0, sticky="e", pady=5)
+        self.combo_model.grid(row=1, column=1, sticky="w", padx=5, pady=5)
+        self.lbl_scale.grid(row=2, column=0, sticky="e", pady=5)
+        self.entry_scale.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+        self.lbl_format.grid(row=3, column=0, sticky="e", pady=5)
+        self.entry_format.grid(row=3, column=1, sticky="w", padx=5, pady=5)
+        if self.mode.get() == "Video":
+            self.chk_fps.grid(row=4, column=1, sticky="w", padx=5, pady=5)
+            self.lbl_fps_manual.grid(row=5, column=0, sticky="e", pady=5)
+            self.entry_fps.grid(row=5, column=1, sticky="w", padx=5, pady=5)
+            self.toggle_fps()
+            if self.entry_format.get() == "png": self.entry_format.delete(0, tk.END); self.entry_format.insert(0, "jpg")
         else:
-            self.image_frame.pack_forget()
-            self.video_frame.pack()
+            if self.entry_format.get() == "jpg": self.entry_format.delete(0, tk.END); self.entry_format.insert(0, "png")
 
-    def browse_image(self):
-        file_path = filedialog.askopenfilename(title="Select an Image File",
-                                               filetypes=[("Image Files", "*.jpg *.png *.jpeg *.bmp")])
-        if file_path:
-            self.input_image_entry.delete(0, tk.END)
-            self.input_image_entry.insert(0, file_path)
+    def toggle_fps(self):
+        if self.match_source_fps.get():
+            self.entry_fps.config(state="disabled")
+        else:
+            self.entry_fps.config(state="normal")
 
-    def save_image(self):
-        file_path = filedialog.asksaveasfilename(title="Save Output Image", defaultextension=".png",
-                                                 filetypes=[("PNG", "*.png"), ("JPEG", "*.jpg *.jpeg")])
-        if file_path:
-            self.output_image_entry.delete(0, tk.END)
-            self.output_image_entry.insert(0, file_path)
+    def browse_exe(self):
+        f = filedialog.askopenfilename(filetypes=[("Executables", "*.exe")])
+        if f: self.realesrgan_path.set(f)
 
-    def browse_video(self):
-        file_path = filedialog.askopenfilename(title="Select a Video File",
-                                               filetypes=[("Video Files", "*.mp4 *.avi *.mkv")])
-        if file_path:
-            self.input_video_entry.delete(0, tk.END)
-            self.input_video_entry.insert(0, file_path)
+    def browse_input(self):
+        ftypes = [("Images", "*.jpg *.png")] if self.mode.get() == "Image" else [("Videos", "*.mp4 *.mkv *.avi")]
+        f = filedialog.askopenfilename(filetypes=ftypes)
+        if f: self.entry_input.delete(0, tk.END); self.entry_input.insert(0, f)
 
-    def save_video(self):
-        file_path = filedialog.asksaveasfilename(title="Save Output Video", defaultextension=".mp4",
-                                                 filetypes=[("MP4", "*.mp4")])
-        if file_path:
-            self.output_video_entry.delete(0, tk.END)
-            self.output_video_entry.insert(0, file_path)
+    def log(self, msg):
+        self.master.after(0, lambda: self._log_safe(msg))
 
-    def run_image_enhancement(self):
-        # Run image processing in a separate thread to keep the GUI responsive
-        threading.Thread(target=self.process_image).start()
+    def _log_safe(self, msg):
+        self.log_text.config(state="normal")
+        self.log_text.insert(tk.END, msg + "\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state="disabled")
 
-    def process_image(self):
-        input_path = self.input_image_entry.get()
-        output_path = self.output_image_entry.get()
-        model = self.model_var.get()
-        scale = self.scale_entry.get()
-        out_format = self.format_entry.get()
+    def update_progress(self, val, text):
+        self.progress_bar['value'] = val
+        self.progress_label.config(text=text)
 
-        if not input_path or not output_path:
-            messagebox.showerror("Error", "Please select both input and output files, sweetie!")
-            return
+    def toggle_process(self):
+        if self.is_running:
+            self.stop_requested = True
+            self.run_btn.config(text="STOPPING...", bg="#ffdddd", state="disabled")
+            if self.current_subprocess:
+                try:
+                    self.current_subprocess.terminate()
+                except:
+                    pass
+        else:
+            if not self.realesrgan_path.get() or not self.entry_input.get():
+                messagebox.showerror("Error", "Please select Executable and Input file.")
+                return
+            self.stop_requested = False
+            self.is_running = True
+            self.run_btn.config(text="STOP PROCESS", bg="#ffaaaa")
+            self.log_text.config(state="normal");
+            self.log_text.delete(1.0, tk.END);
+            self.log_text.config(state="disabled")
+            self.progress_bar['value'] = 0
+            threading.Thread(target=self.process_job, daemon=True).start()
 
-        # Build the command
-        command = [
-            "./realesrgan-ncnn-vulkan.exe",
-            "-i", input_path,
-            "-o", output_path,
-            "-n", model,
-            "-s", scale,
-            "-f", out_format
-        ]
+    def run_subprocess_live(self, command):
+        if self.stop_requested: return
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
 
+        self.current_subprocess = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+        )
+        while True:
+            if self.stop_requested:
+                self.current_subprocess.terminate();
+                break
+            line = self.current_subprocess.stdout.readline()
+            if not line and self.current_subprocess.poll() is not None: break
+            if line: self.log(line.strip())
+        self.current_subprocess.wait()
+        self.current_subprocess = None
+
+    def get_fps_data(self, path):
+        """ Returns the FPS as a float. Defaults to 30.0 if failed. """
         try:
-            subprocess.run(command, check=True)
-            messagebox.showinfo("Success", "Image enhancement completed, sweetie!")
-        except Exception as e:
-            messagebox.showerror("Error", f"An error occurred: {e}")
+            cmd = ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=r_frame_rate", "-of",
+                   "json", path]
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+            data = json.loads(result.stdout)
+            fps_str = data['streams'][0].get('r_frame_rate', "30/1")
+            num, den = map(int, fps_str.split('/'))
+            return num / den if den != 0 else 30.0
+        except:
+            return 30.0
 
-    def run_video_enhancement(self):
-        # Run video processing in a separate thread
-        threading.Thread(target=self.process_video).start()
-
-    def process_video(self):
-        input_video = self.input_video_entry.get()
-        output_video = self.output_video_entry.get()
-        model = self.video_model_var.get()
-        scale = self.video_scale_entry.get()
-        frame_format = self.video_format_entry.get()
-
-        if not input_video or not output_video:
-            messagebox.showerror("Error", "Please select both input and output video files, sweetie!")
-            return
-
-        tmp_frames = "tmp_frames"
-        out_frames = "out_frames"
-        os.makedirs(tmp_frames, exist_ok=True)
-        os.makedirs(out_frames, exist_ok=True)
-
+    def process_job(self):
         try:
-            # Step 1: Extract frames using ffmpeg
-            extract_cmd = [
-                "ffmpeg", "-i", input_video,
-                "-qscale:v", "1", "-qmin", "1", "-qmax", "1",
-                "-vsync", "0",
-                os.path.join(tmp_frames, f"frame%08d.{frame_format}")
-            ]
-            subprocess.run(extract_cmd, check=True)
+            exe_path = self.realesrgan_path.get()
+            input_file = self.entry_input.get()
+            model = self.model_var.get()
+            scale = self.entry_scale.get()
+            fmt = self.entry_format.get()
+            input_dir = os.path.dirname(input_file)
 
-            # Step 2: Enhance frames with RealESRGAN
-            process_cmd = [
-                "./realesrgan-ncnn-vulkan.exe",
-                "-i", tmp_frames,
-                "-o", out_frames,
-                "-n", model,
-                "-s", scale,
-                "-f", frame_format
-            ]
-            subprocess.run(process_cmd, check=True)
+            if self.mode.get() == "Image":
+                self.log("--- Image Mode ---")
+                base_name = os.path.splitext(os.path.basename(input_file))[0]
+                output_file = os.path.join(input_dir, f"{base_name}_upscaled.{fmt}")
+                cmd = [exe_path, "-i", input_file, "-o", output_file, "-n", model, "-s", scale, "-f", fmt]
+                self.run_subprocess_live(cmd)
+                if os.path.exists(output_file):
+                    self.log(f"SUCCESS: Saved to {output_file}")
+                    messagebox.showinfo("Done", f"File saved:\n{output_file}")
+            else:
+                self.log("--- Video Mode (Strict Sync) ---")
 
-            # Step 3: Merge enhanced frames back into a video, preserving audio
-            merge_cmd = [
-                "ffmpeg",
-                "-i", os.path.join(out_frames, f"frame%08d.{frame_format}"),
-                "-i", input_video,
-                "-map", "0:v:0", "-map", "1:a:0",
-                "-c:a", "copy",
-                "-c:v", "libx264",
-                "-r", "23.98",
-                "-pix_fmt", "yuv420p",
-                output_video
-            ]
-            subprocess.run(merge_cmd, check=True)
+                # 1. Setup Temp
+                with tempfile.TemporaryDirectory() as job_dir:
+                    frames_src = os.path.join(job_dir, "src")
+                    frames_dst = os.path.join(job_dir, "dst")
+                    os.makedirs(frames_src);
+                    os.makedirs(frames_dst)
 
-            messagebox.showinfo("Success", "Video enhancement completed, sweetie!")
+                    # 2. Determine Exact FPS
+                    if self.match_source_fps.get():
+                        target_fps = self.get_fps_data(input_file)
+                        self.log(f"Detected Source FPS: {target_fps}")
+                    else:
+                        target_fps = float(self.entry_fps.get())
+                        self.log(f"Manual Target FPS: {target_fps}")
+
+                    # 3. EXTRACT ALL FRAMES (Wait for finish)
+                    self.log("Step 1/3: Extracting Frames... (Please Wait)")
+                    extract_cmd = [
+                        "ffmpeg", "-i", input_file,
+                        "-vsync", "cfr",  # Force Constant Frame Rate
+                        "-r", str(target_fps),  # Force exact FPS
+                        "-qscale:v", "1",
+                        os.path.join(frames_src, f"frame%08d.{fmt}")
+                    ]
+                    self.run_subprocess_live(extract_cmd)
+                    if self.stop_requested: return
+
+                    # 4. COUNT FRAMES (The only way to be 100% accurate)
+                    self.log("Counting extracted frames...")
+                    actual_frames = len(os.listdir(frames_src))
+                    if actual_frames == 0:
+                        raise Exception("Extraction failed. No frames found.")
+                    self.log(f"Exact Frame Count: {actual_frames}")
+
+                    # 5. ENHANCE
+                    self.log(f"Step 2/3: Upscaling {actual_frames} Frames...")
+                    enhance_cmd = [exe_path, "-i", frames_src, "-o", frames_dst, "-n", model, "-s", scale, "-f", fmt]
+
+                    startupinfo = None
+                    if os.name == 'nt':
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+                    self.current_subprocess = subprocess.Popen(
+                        enhance_cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        startupinfo=startupinfo, creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+                    )
+
+                    while True:
+                        if self.stop_requested: self.current_subprocess.terminate(); break
+                        line = self.current_subprocess.stdout.readline()
+                        if not line and self.current_subprocess.poll() is not None: break
+                        if line:
+                            l = line.strip()
+                            if "0.00%" not in l: self.log(l)
+
+                            # Update UI based on ACTUAL output files
+                            try:
+                                done_count = len(os.listdir(frames_dst))
+                                prog = (done_count / actual_frames) * 100
+                                # Clamp to 100% max
+                                prog = min(100.0, prog)
+                                self.master.after(0, lambda p=prog, c=done_count: self.update_progress(p,
+                                                                                                       f"Upscaling: {c}/{actual_frames} ({int(p)}%)"))
+                            except:
+                                pass
+
+                    self.current_subprocess = None
+                    if self.stop_requested: return
+
+                    # 6. MERGE (Using the EXACT same FPS as extraction)
+                    self.log("Step 3/3: Merging Video...")
+                    base_name = os.path.splitext(os.path.basename(input_file))[0]
+                    safe_output_path = os.path.join(input_dir, f"{base_name}_UNSAVED_RESULT.mp4")
+                    if os.path.exists(safe_output_path): os.remove(safe_output_path)
+
+                    merge_cmd = [
+                        "ffmpeg", "-r", str(target_fps),  # STRICT SYNC
+                        "-i", os.path.join(frames_dst, f"frame%08d.{fmt}"),
+                        "-i", input_file,
+                        "-map", "0:v:0", "-map", "1:a?",
+                        "-c:a", "copy", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        safe_output_path
+                    ]
+                    self.run_subprocess_live(merge_cmd)
+
+                    if os.path.exists(safe_output_path):
+                        self.log(f"SAVED: {safe_output_path}")
+                        self.master.after(0, lambda: self._prompt_rename(safe_output_path))
+                    else:
+                        self.log("CRITICAL: Merge failed.")
+
         except Exception as e:
-            messagebox.showerror("Error", f"An error occurred during video processing: {e}")
-        # Optional cleanup of temporary folders can be added here
+            self.log(f"ERROR: {e}")
+            messagebox.showerror("Error", str(e))
+        finally:
+            self.is_running = False
+            self.stop_requested = False
+            self.master.after(0, lambda: self.run_btn.config(text="START PROCESS", bg="#dddddd", state="normal"))
+
+    def _prompt_rename(self, safe_file):
+        self.update_progress(100, "Done!")
+        resp = messagebox.askyesno("Finished",
+                                   f"File saved securely at:\n{safe_file}\n\nDo you want to rename/move it?")
+        if resp:
+            out_path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("Video", "*.mp4")])
+            if out_path:
+                try:
+                    if os.path.exists(out_path): os.remove(out_path)
+                    shutil.move(safe_file, out_path)
+                    messagebox.showinfo("Success", f"Moved to:\n{out_path}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Could not move.\nFile is still at: {safe_file}\n{e}")
+        else:
+            messagebox.showinfo("File Safe", f"File is located at:\n{safe_file}")
+
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = RealESRGANGUI(root)
+    app = RealESRGAN_Strict_GUI(root)
     root.mainloop()
