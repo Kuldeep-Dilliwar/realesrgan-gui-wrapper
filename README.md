@@ -20,7 +20,7 @@ This application is a GUI wrapper. For it to work, you must have the following i
    - To test, open a terminal and type: `ffmpeg -version`
 2. **RealESRGAN Executable**: You need the command-line binary.
    - **Tested Version:** `realesrgan-ncnn-vulkan-20220424-windows` (v0.2.0.0).
-   - [Download it here]([https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.0.0](https://github.com/xinntao/Real-ESRGAN?tab=readme-ov-file))
+   - [Download it here](https://github.com/xinntao/Real-ESRGAN/releases)
 
 ## Installation
 
